@@ -34,3 +34,30 @@ def obtener_tarea(tarea_id: int):
         if tarea.id == tarea_id:
             return tarea
     raise HTTPException(status_code=404, detail="Tarea no encontrada")
+
+#Modelo para actualizar una tarea existente. Permite modificar el título y la descripción de la tarea, ambos campos son opcionales.
+
+class TareaUpdate(BaseModel):
+    titulo: Optional[str]= None
+    descripcion: Optional[str]= None
+
+@app.put("/tareas/{tarea_id}", response_model=Tarea) #ruta PUT para actualizar una tarea existente. Recibe el ID de la tarea a actualizar y los datos de actualización en el cuerpo de la solicitud.
+
+def actualizar_tarea(tarea_id: int, tarea_actualizada: TareaUpdate):
+    for tarea in tareas_db:
+        if tarea.id == tarea_id:
+            if tarea_actualizada.titulo is not None:
+                tarea.titulo = tarea_actualizada.titulo
+            if tarea_actualizada.descripcion is not None:
+                tarea.descripcion = tarea_actualizada.descripcion
+            return tarea
+    raise HTTPException(status_code=404, detail="Tarea no encontrada")
+
+@app.delete("/tareas/{tarea_id}",response_model=Tarea) #ruta DELETE para eliminar una tarea existente. Recibe el ID de la tarea a eliminar y devuelve la tarea eliminada como respuesta.
+
+def eliminar_tarea(tarea_id: int):
+    for i, tarea in enumerate(tareas_db):
+        if tarea.id == tarea_id:
+            tareas_db.pop(i)
+            return {"mensaje": f"Tarea {tarea_id} eliminada exitosamente"}
+    raise HTTPException(status_code=404, detail="Tarea no encontrada")
