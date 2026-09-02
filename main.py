@@ -18,31 +18,6 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 app = FastAPI()
-def inicializar_bd():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    # Crear tablas si no existen
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS usuarios (
-            id SERIAL PRIMARY KEY,
-            nombre_usuario VARCHAR(50) UNIQUE NOT NULL,
-            password_hash VARCHAR(255) NOT NULL
-        );
-    """)
-    # Crear tabla de tareas
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS tareas (
-            id SERIAL PRIMARY KEY,
-            titulo VARCHAR(100) NOT NULL,
-            descripcion TEXT,
-            usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE
-        );
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
-    print("Base de datos inicializada correctamente.")
-inicializar_bd()
 
 security = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -97,6 +72,32 @@ def obtener_usuario_actual(credenciales: HTTPAuthorizationCredentials = Depends(
         raise HTTPException(status_code=401, detail="Usuario no encontrado")
     return usuario
 
+def inicializar_bd():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Crear tablas si no existen
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id SERIAL PRIMARY KEY,
+            nombre_usuario VARCHAR(50) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL
+        );
+    """)
+    # Crear tabla de tareas
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tareas (
+            id SERIAL PRIMARY KEY,
+            titulo VARCHAR(100) NOT NULL,
+            descripcion TEXT,
+            usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE
+        );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+    print("Base de datos inicializada correctamente.")
+
+inicializar_bd()
 # --- MODELOS ---
 class TareaCreate(BaseModel):
     titulo: str
