@@ -1,63 +1,208 @@
-from fastapi import FastAPI, HTTPException #fastapi es un framework para crear APIs en Python y HTTPException es una clase que se utiliza para manejar errores HTTP en FastAPI
-from pydantic import BaseModel #BaseModel es una clase de Pydantic que se utiliza para definir modelos de datos y validación en FastAPI
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
 from typing import List, Optional
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
 
-app=FastAPI()
+load_dotenv()
 
-class TareaCreate(BaseModel): #clase que contiene para crear una tarea 
+# --- CONFIGURACIÓN ---
+SECRET_KEY = os.getenv("SECRET_KEY", "mi_clave_super_secreta_cambia_esto_en_produccion")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+app = FastAPI()
+security = HTTPBearer()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# --- CONEXIÓN A BD ---
+def get_db_connection():
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return psycopg2.connect(database_url, sslmode='require')
+    else:
+        return psycopg2.connect(
+            host="localhost",
+            database="mi_backend_db",
+            user="postgres",
+            password="Coyot35Tlx",  # ¡CAMBIA ESTA CONTRASEÑA POR LA TUYA!
+            port="5432"
+        )
+
+# --- FUNCIONES DE SEGURIDAD ---
+def verificar_contraseña(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def encriptar_contraseña(password):
+    return pwd_context.hash(password)
+
+def crear_token_acceso(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def obtener_usuario_actual(credenciales: HTTPAuthorizationCredentials = Depends(security)):
+    token = credenciales.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        usuario_id = payload.get("sub")
+        if usuario_id is None:
+            raise HTTPException(status_code=401, detail="Token inválido")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+    
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM usuarios WHERE id = %s;", (usuario_id,))
+    usuario = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not usuario:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado")
+    return usuario
+
+# --- MODELOS ---
+class TareaCreate(BaseModel):
     titulo: str
     descripcion: Optional[str] = None
 
-class Tarea(TareaCreate): #clase donde la API hereda de la clase TareaCreate y agrega un atributo adicional llamado id, que es un entero que representa el identificador único de la tarea.
+class Tarea(TareaCreate):
     id: int
-
-tareas_db = []  #base de datos simulada para almacenar las tareas
-contador_id = 1
-
-@app.post("/tareas/", response_model=Tarea) #cuando se hace una peticion POST a la ruta "/tareas/", se espera que se reciba un objeto JSON que cumpla con el modelo TareaCreate.
-def crear_tarea(tarea: TareaCreate):
-    global contador_id #se modifica la variable global contador_id para poder incrementar su valor y asignar un identificador único a cada nueva tarea creada.
-    nueva_tarea = Tarea(id=contador_id, titulo=tarea.titulo, descripcion=tarea.descripcion) #se crea una nueva instancia de la clase Tarea utilizando los datos proporcionados en el objeto tarea recibido en la solicitud.
-    tareas_db.append(nueva_tarea) #se añade la nueva tarea a la lista tareas_db, que simula una base de datos en memoria.
-    contador_id += 1 #se  incrementa el valor de contador_id para que la próxima tarea creada tenga un identificador único diferente.
-    return nueva_tarea #se devuelve la nueva tarea creada como respuesta a la solicitud POST, utilizando el modelo de respuesta Tarea para garantizar que se devuelvan los datos en el formato esperado.
-
-#aqui se definen dos rutas GET para obtener la lista de tareas y una tarea específica por su ID. La primera ruta devuelve todas las tareas almacenadas en la base de datos simulada, mientras que la segunda ruta busca una tarea por su ID y devuelve un error 404 si no se encuentra.
-@app.get("/tareas/", response_model=List[Tarea])
-def listar_tareas():
-    return tareas_db    
-
-
-@app.get("/tareas/{tarea_id}", response_model=Tarea)
-def obtener_tarea(tarea_id: int):
-    for tarea in tareas_db:
-        if tarea.id == tarea_id:
-            return tarea
-    raise HTTPException(status_code=404, detail="Tarea no encontrada")
-
-#Modelo para actualizar una tarea existente. Permite modificar el título y la descripción de la tarea, ambos campos son opcionales.
+    usuario_id: int
 
 class TareaUpdate(BaseModel):
-    titulo: Optional[str]= None
-    descripcion: Optional[str]= None
+    titulo: Optional[str] = None
+    descripcion: Optional[str] = None
 
-@app.put("/tareas/{tarea_id}", response_model=Tarea) #ruta PUT para actualizar una tarea existente. Recibe el ID de la tarea a actualizar y los datos de actualización en el cuerpo de la solicitud.
+class UsuarioCreate(BaseModel):
+    nombre_usuario: str
+    password: str
 
-def actualizar_tarea(tarea_id: int, tarea_actualizada: TareaUpdate):
-    for tarea in tareas_db:
-        if tarea.id == tarea_id:
-            if tarea_actualizada.titulo is not None:
-                tarea.titulo = tarea_actualizada.titulo
-            if tarea_actualizada.descripcion is not None:
-                tarea.descripcion = tarea_actualizada.descripcion
-            return tarea
-    raise HTTPException(status_code=404, detail="Tarea no encontrada")
+class UsuarioLogin(BaseModel):
+    nombre_usuario: str
+    password: str
 
-@app.delete("/tareas/{tarea_id}",response_model=Tarea) #ruta DELETE para eliminar una tarea existente. Recibe el ID de la tarea a eliminar y devuelve la tarea eliminada como respuesta.
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
-def eliminar_tarea(tarea_id: int):
-    for i, tarea in enumerate(tareas_db):
-        if tarea.id == tarea_id:
-            tareas_db.pop(i)
-            return {"mensaje": f"Tarea {tarea_id} eliminada exitosamente"}
-    raise HTTPException(status_code=404, detail="Tarea no encontrada")
+# --- ENDPOINTS ---
+@app.post("/registro", response_model=Token)
+def registrar_usuario(usuario: UsuarioCreate):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM usuarios WHERE nombre_usuario = %s;", (usuario.nombre_usuario,))
+    if cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="El usuario ya existe")
+    hashed = encriptar_contraseña(usuario.password)
+    cur.execute("INSERT INTO usuarios (nombre_usuario, password_hash) VALUES (%s, %s) RETURNING id;", (usuario.nombre_usuario, hashed))
+    nuevo_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    token = crear_token_acceso({"sub": str(nuevo_id)})
+    return {"access_token": token, "token_type": "bearer"}
+
+@app.post("/login", response_model=Token)
+def login(usuario: UsuarioLogin):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM usuarios WHERE nombre_usuario = %s;", (usuario.nombre_usuario,))
+    usuario_db = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not usuario_db or not verificar_contraseña(usuario.password, usuario_db["password_hash"]):
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    token = crear_token_acceso({"sub": str(usuario_db["id"])})
+    return {"access_token": token, "token_type": "bearer"}
+
+@app.post("/tareas/", response_model=Tarea)
+def crear_tarea(tarea: TareaCreate, usuario_actual: dict = Depends(obtener_usuario_actual)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO tareas (titulo, descripcion, usuario_id) VALUES (%s, %s, %s) RETURNING id;", (tarea.titulo, tarea.descripcion, usuario_actual["id"]))
+    nuevo_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return Tarea(id=nuevo_id, titulo=tarea.titulo, descripcion=tarea.descripcion, usuario_id=usuario_actual["id"])
+
+@app.get("/tareas/", response_model=List[Tarea])
+def listar_tareas(usuario_actual: dict = Depends(obtener_usuario_actual)):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM tareas WHERE usuario_id = %s ORDER BY id;", (usuario_actual["id"],))
+    tareas = cur.fetchall()
+    cur.close()
+    conn.close()
+    return tareas
+
+@app.get("/tareas/{tarea_id}", response_model=Tarea)
+def obtener_tarea(tarea_id: int, usuario_actual: dict = Depends(obtener_usuario_actual)):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM tareas WHERE id = %s AND usuario_id = %s;", (tarea_id, usuario_actual["id"]))
+    tarea = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not tarea:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada o no te pertenece")
+    return tarea
+
+@app.put("/tareas/{tarea_id}", response_model=Tarea)
+def actualizar_tarea(tarea_id: int, tarea_actualizada: TareaUpdate, usuario_actual: dict = Depends(obtener_usuario_actual)):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM tareas WHERE id = %s AND usuario_id = %s;", (tarea_id, usuario_actual["id"]))
+    tarea_existente = cur.fetchone()
+    if not tarea_existente:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Tarea no encontrada o no te pertenece")
+    campos = []
+    valores = []
+    if tarea_actualizada.titulo is not None:
+        campos.append("titulo = %s")
+        valores.append(tarea_actualizada.titulo)
+    if tarea_actualizada.descripcion is not None:
+        campos.append("descripcion = %s")
+        valores.append(tarea_actualizada.descripcion)
+    if not campos:
+        cur.close()
+        conn.close()
+        return tarea_existente
+    valores.append(tarea_id)
+    query = f"UPDATE tareas SET {', '.join(campos)} WHERE id = %s RETURNING *;"
+    cur.execute(query, tuple(valores))
+    tarea_actualizada_db = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return tarea_actualizada_db
+
+@app.delete("/tareas/{tarea_id}")
+def eliminar_tarea(tarea_id: int, usuario_actual: dict = Depends(obtener_usuario_actual)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM tareas WHERE id = %s AND usuario_id = %s;", (tarea_id, usuario_actual["id"]))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Tarea no encontrada o no te pertenece")
+    cur.execute("DELETE FROM tareas WHERE id = %s;", (tarea_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"mensaje": f"Tarea {tarea_id} eliminada"}
